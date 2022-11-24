@@ -1,5 +1,6 @@
 transfered_*
 .nfs*
+copy_*
 
 # Prerequisites
 *.d

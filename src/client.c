@@ -3,9 +3,10 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <sys/socket.h>
 
 #define BUFFER_SIZE 2000
-#define MAX_SEGMENTS 200
+#define MAX_SEGMENTS 900
 
 /*
 TDL :
@@ -36,7 +37,7 @@ int main(void){
     
     // Set port and IP:
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(2001);
+    server_addr.sin_port = htons(2000);
     server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     int server_struct_length = sizeof(server_addr);
@@ -62,7 +63,7 @@ int main(void){
     if (strncmp(server_message, "SYN-ACK", 7) == 0) {
       strcpy(client_message, "ACK");
       char* data_port_str = (char *)malloc(4*sizeof(char));
-      strncpy(data_port_str, server_message+8, 4);
+      strncpy(data_port_str, server_message+7, 4);
       data_socket_desc = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
       if(data_socket_desc < 0){
           perror("Error while creating data socket\n");
@@ -103,8 +104,8 @@ int main(void){
     int seq_received[MAX_SEGMENTS];
     char tab_segments[MAX_SEGMENTS][BUFFER_SIZE];
     int my_ack = 0;
-    char ack_string[12];
-    sprintf(ack_string, "ACK_%08d", my_ack);
+    char ack_string[9];
+    sprintf(ack_string, "ACK%06d", my_ack);
     while(1) {
       memset(server_message, '\0', sizeof(server_message));
       printf("Listening data socket...\n");
@@ -114,19 +115,16 @@ int main(void){
           perror("Error while receiving server's msg\n");
           exit(1);
       }
-      if (strcmp(server_message, "QUIT") == 0) {
+      if (strcmp(server_message, "FIN") == 0) {
         printf("Transmission ended by the server.\n");
+        //fwrite(tab_segments, sizeof(char), received_size-14, file);
         break;
       }     
-      char seq[9];
-      for (int i=5; i<(5+sizeof(seq)); i++) {
-        if (i == 4+sizeof(seq)) { 
-          seq[i-5] = '\0';
-          break;
-        }
-        seq[i-5] = server_message[i];
+      char seq[6];
+      for (int i=0; i<sizeof(seq); i++) {
+        seq[i] = server_message[i];
       }
-      char* p = server_message + 14; 
+      char* p = server_message + 6; 
       int seq_nb = atoi(seq);
       seq_received[seq_nb]++;
       strcpy(tab_segments[seq_nb], p);
@@ -136,16 +134,12 @@ int main(void){
           break;
         }
       }
-      sprintf(ack_string, "ACK_%08d", my_ack);
+      sprintf(ack_string, "ACK%06d", my_ack);
       if(sendto(data_socket_desc, ack_string, strlen(ack_string), 0,
         (struct sockaddr*)&data_addr, data_struct_length) < 0){
         perror("Unable to send ACK message");
         return -1;
       }
-      /*if (my_ack >= MAX_SEGMENTS-1) {
-        fwrite(p, sizeof(char), sizeof(p), file);
-      }*/
-      fwrite(p, sizeof(char), received_size-14, file);
     }
     fclose(file);
     

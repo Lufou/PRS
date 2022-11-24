@@ -6,30 +6,36 @@
 #include <stdlib.h>
 #include <sys/select.h>
 
-#define BUFFER_SIZE 2000
+#define BUFFER_SIZE 1500
 #define RTT 1
 #define CREDIT 10
 
 int sendPart(int data_socket_desc, char server_message[BUFFER_SIZE], char result[BUFFER_SIZE], int part, FILE * file, struct sockaddr_in data_addr) {
-  fseek(file, (part*(BUFFER_SIZE-14)), SEEK_SET);
+  fseek(file, (part*(BUFFER_SIZE-6)), SEEK_SET);
   size_t reading_size;
-  reading_size = fread(server_message, 1, BUFFER_SIZE-14, file);
-  for (int i=14; i<BUFFER_SIZE; i++) {
-    result[i] = server_message[i-14];
+  reading_size = fread(server_message, 1, BUFFER_SIZE-6, file);
+  for (int i=6; i<BUFFER_SIZE; i++) {
+    result[i] = server_message[i-6];
   }
 
-  if (sendto(data_socket_desc, result, reading_size+15, 0, (struct sockaddr *)&data_addr, sizeof(data_addr)) < 0) {
+  if (sendto(data_socket_desc, result, reading_size+6, 0, (struct sockaddr *)&data_addr, sizeof(data_addr)) < 0) {
     fclose(file);
     perror("ERROR SENDING DATA\n");
     return -1;
     //exit(1);
   }
-  printf("Sent part %d of %ld bytes\n", part, reading_size+14);
+  printf("Sent part %d of %ld bytes\n", part, reading_size+6);
   return 0;
 }
 
 int main(int argc, char *argv[]){
   // https://stackoverflow.com/questions/60832185/how-to-send-any-file-image-exe-through-udp-in-c
+    int port = 2000;
+    if (argc != 2) {
+      perror("Please enter port as following: ./server <server_port>\n");
+      return -1;
+    }
+    port = atoi(argv[1]);
     int socket_desc, data_socket_desc;
     struct sockaddr_in server_addr, data_addr;
     char server_message[BUFFER_SIZE], client_message[BUFFER_SIZE];
@@ -49,7 +55,7 @@ int main(int argc, char *argv[]){
     
     // Set port and IP:
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(2001);
+    server_addr.sin_port = htons(port);
     server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     int server_struct_length = sizeof(server_addr);
     
@@ -76,10 +82,9 @@ int main(int argc, char *argv[]){
       
       // Respond to client:
       if (strncmp(client_message, "SYN", 3) == 0) {
-        strcpy(server_message, "SYN-ACK 5000");
+        strcpy(server_message, "SYN-ACK5000");
         if (fork() == 0) {
           struct timeval rtt;
-          rtt.tv_sec = RTT;
           // Create UDP socket:
           data_socket_desc = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
           if(data_socket_desc < 0){
@@ -90,9 +95,9 @@ int main(int argc, char *argv[]){
           // Set port and IP:
           data_addr.sin_family = AF_INET;
           data_addr.sin_port = htons(5000);
-          data_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+          data_addr.sin_addr.s_addr = htonl(INADDR_ANY);
           int data_struct_length = sizeof(data_addr);
-          
+      
           // Bind to the set port and IP:
           if(bind(data_socket_desc, (struct sockaddr*)&data_addr, sizeof(data_addr)) < 0){
               perror("Couldn't bind to the data port\n");
@@ -107,26 +112,16 @@ int main(int argc, char *argv[]){
           printf("Listening for incoming messages...\n\n");
 
           if (recvfrom(data_socket_desc, client_message, sizeof(client_message), 0, (struct sockaddr*)&data_addr, &data_struct_length) < 0) {
-            perror("Error when trying to receive ACK msg\n");
+            perror("Error when trying to receive msg\n");
             return -1;
           }
-
-          if (strcmp(client_message, "ACK") == 0) {
-            printf("Msg from client: %s\n", client_message);
+          
+          //if (strcmp(client_message, "ACK") == 0) {
             FILE * file;
-            char filename[100];
-            printf("File name to transfer: ");
-            fgets(filename, 100, stdin);
-            filename[strcspn(filename, "\n")] = 0;
-            file = fopen(filename, "rb");
-            while (file == NULL) {
+            printf("File name to transfer: %s\n", client_message);
+            file = fopen(client_message, "rb");
+            if (file == NULL) {
               printf("Couldn't open the file.\nPlease enter a valid file name: ");
-              fgets(filename, 100, stdin);
-              filename[strcspn(filename, "\n")] = 0;
-              file = fopen(filename, "rb");
-            }
-            if (sendto(data_socket_desc, filename, sizeof(filename), 0, (struct sockaddr *)&data_addr, data_struct_length) < 0) {
-              perror("Couldn't send filename.\n");
               close(data_socket_desc);
               exit(1);
             }
@@ -134,23 +129,21 @@ int main(int argc, char *argv[]){
             int file_size = ftell(file);
             int part = 0;
             char result[BUFFER_SIZE];
-            char number[8] = "00000000";
-            sprintf(result, "DATA %s", number);
-            result[13] = ' ';
+            sprintf(result, "%06d", part);
+            //result[6] = ' ';
             int credit = CREDIT;
             fd_set desc_set;
             FD_ZERO(&desc_set);
             struct timeval nowait;
-            nowait.tv_usec = 0;
-            nowait.tv_sec = 0;
-            while((part * (BUFFER_SIZE-14)) < file_size) {
+            while((part * (BUFFER_SIZE-6)) < file_size) {
               while(credit > 0) {
+                nowait.tv_usec = 0;
+                nowait.tv_sec = 0;
                 FD_SET(data_socket_desc, &desc_set);
                 sendPart(data_socket_desc, server_message, result, part, file, data_addr);
                 credit--;
-                select(1, &desc_set, &desc_set, &desc_set, &nowait);
+                select(data_socket_desc+1, &desc_set, NULL, NULL, &nowait);
                 if (FD_ISSET(data_socket_desc, &desc_set)) {
-                  printf("HERE\n");
                   if (recvfrom(data_socket_desc, client_message, sizeof(client_message), 0, (struct sockaddr*)&data_addr, &data_struct_length) < 0) {
                     perror("Error when trying to receive ACK msg\n");
                     return -1;
@@ -158,21 +151,19 @@ int main(int argc, char *argv[]){
                   credit++;
                 }
                 part++;
-                sprintf(result, "DATA %s", number);
-                result[13] = ' ';
+                sprintf(result, "%06d", part);
               }
+              rtt.tv_sec = RTT;
               FD_SET(data_socket_desc, &desc_set);
-              select(1, &desc_set, &desc_set, &desc_set, &rtt);
+              select(data_socket_desc+1, &desc_set, NULL, NULL, &rtt);
               if (FD_ISSET(data_socket_desc, &desc_set)) {
-                printf("HERE2\n");
                 if (recvfrom(data_socket_desc, client_message, sizeof(client_message), 0, (struct sockaddr*)&data_addr, &data_struct_length) < 0) {
                   perror("Error when trying to receive ACK msg\n");
                   return -1;
                 }
                 credit++;
               } else {
-                //RETRANSMISSION
-                printf("HERE3\n");
+                prinft("RTT Passed, retransmitting segment %d...\n", part);
                 sendPart(data_socket_desc, server_message, result, part, file, data_addr);
               }
             }
@@ -181,7 +172,7 @@ int main(int argc, char *argv[]){
               fclose(file);
               exit(1);
             }
-          }          
+          //}          
           return -1;
         }
       }
