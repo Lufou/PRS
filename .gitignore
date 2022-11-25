@@ -1,6 +1,7 @@
 transfered_*
 .nfs*
 copy_*
+*.log
 
 # Prerequisites
 *.d
