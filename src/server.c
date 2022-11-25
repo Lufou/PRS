@@ -1,13 +1,11 @@
 #include <stdio.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/select.h>
 
 #define BUFFER_SIZE 1500
-#define RTT 1
 #define CREDIT 10
 
 int sendPart(int data_socket_desc, char server_message[BUFFER_SIZE], char result[BUFFER_SIZE], int part, FILE * file, struct sockaddr_in data_addr) {
@@ -22,10 +20,33 @@ int sendPart(int data_socket_desc, char server_message[BUFFER_SIZE], char result
     fclose(file);
     perror("ERROR SENDING DATA\n");
     return -1;
-    //exit(1);
+    //retry
   }
-  printf("Sent part %d of %ld bytes\n", part, reading_size+6);
+  /*for(int i=0; i < BUFFER_SIZE; i++) {
+    printf(" %2x", result[i]);
+  }*/
+  putchar('\n');
+  printf("Sent part %d of %ld bytes\n", part+1, reading_size+6);
   return 0;
+}
+
+int checkRcvAck(int seq_nb, int* received_acks) {
+  return received_acks[seq_nb];
+}
+
+int readAck(char client_message[BUFFER_SIZE], int* received_acks) {
+  char* seq = (char *)malloc(6*sizeof(char));
+  for (int i=3; i<3+sizeof(seq); i++) {
+    seq[i-3] = client_message[i];
+  }
+  int seq_nb = atoi(seq);
+  free(seq);
+  printf("ACK %06d RECEIVED\n", seq_nb);
+  if (checkRcvAck(seq_nb, received_acks) == 0) {
+    received_acks[seq_nb] = 1;
+    return -1;
+  }
+  return seq_nb;
 }
 
 int main(int argc, char *argv[]){
@@ -116,63 +137,77 @@ int main(int argc, char *argv[]){
             return -1;
           }
           
-          //if (strcmp(client_message, "ACK") == 0) {
-            FILE * file;
-            printf("File name to transfer: %s\n", client_message);
-            file = fopen(client_message, "rb");
-            if (file == NULL) {
-              printf("Couldn't open the file.\nPlease enter a valid file name: ");
-              close(data_socket_desc);
-              exit(1);
-            }
-            fseek(file, 0, SEEK_END);
-            int file_size = ftell(file);
-            int part = 0;
-            char result[BUFFER_SIZE];
-            sprintf(result, "%06d", part);
-            //result[6] = ' ';
-            int credit = CREDIT;
-            fd_set desc_set;
-            FD_ZERO(&desc_set);
-            struct timeval nowait;
-            while((part * (BUFFER_SIZE-6)) < file_size) {
-              while(credit > 0) {
-                nowait.tv_usec = 0;
-                nowait.tv_sec = 0;
-                FD_SET(data_socket_desc, &desc_set);
-                sendPart(data_socket_desc, server_message, result, part, file, data_addr);
-                credit--;
-                select(data_socket_desc+1, &desc_set, NULL, NULL, &nowait);
-                if (FD_ISSET(data_socket_desc, &desc_set)) {
-                  if (recvfrom(data_socket_desc, client_message, sizeof(client_message), 0, (struct sockaddr*)&data_addr, &data_struct_length) < 0) {
-                    perror("Error when trying to receive ACK msg\n");
-                    return -1;
-                  }
-                  credit++;
-                }
-                part++;
-                sprintf(result, "%06d", part);
-              }
-              rtt.tv_sec = RTT;
+          FILE * file;
+          printf("File name to transfer: %s\n", client_message);
+          file = fopen(client_message, "rb");
+          if (file == NULL) {
+            printf("Couldn't open the file.\nPlease enter a valid file name: ");
+            close(data_socket_desc);
+            exit(1);
+          }
+          fseek(file, 0, SEEK_END);
+          int file_size = ftell(file);
+          int part = 0;
+          char result[BUFFER_SIZE];
+          sprintf(result, "%06d", part+1);
+          //result[6] = ' ';
+          int credit = CREDIT;
+          fd_set desc_set;
+          FD_ZERO(&desc_set);
+          struct timeval nowait;
+          int* received_acks = (int *)malloc(999999*sizeof(int));
+          while((part * (BUFFER_SIZE-6)) < file_size) {
+            while(credit > 0) {
+              nowait.tv_usec = 0;
+              nowait.tv_sec = 0;
               FD_SET(data_socket_desc, &desc_set);
-              select(data_socket_desc+1, &desc_set, NULL, NULL, &rtt);
+              sendPart(data_socket_desc, server_message, result, part, file, data_addr);
+              credit--;
+              select(data_socket_desc+1, &desc_set, NULL, NULL, &nowait);
               if (FD_ISSET(data_socket_desc, &desc_set)) {
                 if (recvfrom(data_socket_desc, client_message, sizeof(client_message), 0, (struct sockaddr*)&data_addr, &data_struct_length) < 0) {
                   perror("Error when trying to receive ACK msg\n");
                   return -1;
                 }
+                int checkAck = readAck(client_message, received_acks);
                 credit++;
-              } else {
-                prinft("RTT Passed, retransmitting segment %d...\n", part);
-                sendPart(data_socket_desc, server_message, result, part, file, data_addr);
+                if (checkAck != -1) {
+                  part = checkAck-1;
+                  printf("Resending segment %d\n", checkAck+1);
+                }
               }
+              part++;
+              sprintf(result, "%06d", part+1);
             }
-            strcpy(server_message, "FIN");
-            if (sendto(data_socket_desc, server_message, sizeof(server_message), 0, (struct sockaddr*)&data_addr, data_struct_length) < 0) {
-              fclose(file);
-              exit(1);
+            rtt.tv_sec = 0;
+            rtt.tv_usec = 300000;
+            FD_SET(data_socket_desc, &desc_set);
+            select(data_socket_desc+1, &desc_set, NULL, NULL, &rtt);
+            if (FD_ISSET(data_socket_desc, &desc_set)) {
+              if (recvfrom(data_socket_desc, client_message, sizeof(client_message), 0, (struct sockaddr*)&data_addr, &data_struct_length) < 0) {
+                perror("Error when trying to receive ACK msg\n");
+                return -1;
+              }
+              credit++;
+              int checkAck = readAck(client_message, received_acks);
+              if (checkAck != -1) {
+                part = checkAck;
+                sprintf(result, "%06d", part+1);
+                printf("Resending segment %d\n", checkAck+1);
+              }
+            } else {
+              printf("RTT Passed, retransmitting segment %d...\n", part);
+              sendPart(data_socket_desc, server_message, result, part, file, data_addr);
             }
-          //}          
+          }
+          strcpy(server_message, "FIN");
+          if (sendto(data_socket_desc, server_message, sizeof(server_message), 0, (struct sockaddr*)&data_addr, data_struct_length) < 0) {
+            //retry
+          }
+          free(received_acks);
+          close(data_socket_desc);
+          fclose(file);
+          exit(1);       
           return -1;
         }
       }
