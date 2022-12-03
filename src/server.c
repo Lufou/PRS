@@ -194,7 +194,15 @@ int main(int argc, char *argv[]){
           int estimatedRtt = MAX_RTT;
           int oldRtt = estimatedRtt;
           int maxPart = calculatePartsToSend(file_size);
+          int congestionAvoidance = 0;
           while(received_acks[maxPart].amount == 0) {
+            if (!congestionAvoidance && cwnd > ssthresh) {
+              printf("Entering Congestion Avoidance mode.\n");
+              congestionAvoidance = 1;
+            } else if (congestionAvoidance && cwnd <= ssthresh) {
+              printf("Leaving Congestion Avoidance mode.\n");
+              congestionAvoidance = 0;
+            }
             struct timespec endtime;
             if (received_acks[part+1].amount >= 1) part++;
             while(FlightSize(part, sentData, received_acks) < cwnd) {
@@ -215,7 +223,11 @@ int main(int argc, char *argv[]){
                 estimatedRtt = (7.0/8.0)*oldRtt + (1.0/8.0)*time_taken;
                 if (estimatedRtt > MAX_RTT || estimatedRtt < 0) estimatedRtt = MAX_RTT;
                 oldRtt = estimatedRtt;
-                cwnd++;
+                if (congestionAvoidance) {
+                  cwnd = cwnd + 1/cwnd;
+                } else {
+                  cwnd++;
+                }
                 if (checkAck.amount >= 4) {
                   part = checkAck.seq_nb;
                   printf("Resending segment %d\n", checkAck.seq_nb+1);
@@ -236,13 +248,17 @@ int main(int argc, char *argv[]){
                 perror("Error when trying to receive ACK msg\n");
                 return -1;
               }
-              cwnd++;
               clock_gettime(CLOCK_REALTIME, &endtime);
               struct ACK checkAck = readAck(client_message, received_acks);
               int time_taken = ((endtime.tv_sec - sentData[checkAck.seq_nb-1].tv_sec)*nsec_per_sec + endtime.tv_nsec - sentData[checkAck.seq_nb-1].tv_nsec)/nsec_in_usec;
               estimatedRtt = (7.0/8.0)*oldRtt + (1.0/8.0)*time_taken;
               if (estimatedRtt > MAX_RTT || estimatedRtt < 0) estimatedRtt = MAX_RTT;
               oldRtt = estimatedRtt;
+              if (congestionAvoidance) {
+                cwnd = cwnd + 1/cwnd;
+              } else {
+                cwnd++;
+              }
               if (checkAck.amount >= 4) {
                 part = checkAck.seq_nb;
                 printf("Resending segment %d\n", checkAck.seq_nb+1);
@@ -254,7 +270,11 @@ int main(int argc, char *argv[]){
               }
             } else {
               printf("RTT Passed, retransmitting segment %d...\n", part+1);
-              cwnd = 1;
+              if (congestionAvoidance) {
+                cwnd++;
+              } else {
+                cwnd = 1;
+              }
               ssthresh = FlightSize(part, sentData, received_acks)/2;
               sendPart(data_socket_desc, server_message, result, part, sentData, file, data_addr);
             }
