@@ -4,17 +4,28 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/select.h>
+#include <time.h>
 
 #define BUFFER_SIZE 1500
-#define CREDIT 10
+#define nsec_per_sec 1000000000000L
+#define nsec_in_usec 1000L
+#define MAX_RTT 200000
 
-int sendPart(int data_socket_desc, char server_message[BUFFER_SIZE], char result[BUFFER_SIZE], int part, FILE * file, struct sockaddr_in data_addr) {
+struct ACK {
+  int seq_nb, amount;
+};
+
+int sendPart(int data_socket_desc, char server_message[BUFFER_SIZE], char result[BUFFER_SIZE], int part, struct timespec* sentData, FILE * file, struct sockaddr_in data_addr) {
   fseek(file, (part*(BUFFER_SIZE-6)), SEEK_SET);
   size_t reading_size;
   reading_size = fread(server_message, 1, BUFFER_SIZE-6, file);
+  sprintf(result, "%06d", part+1);
   for (int i=6; i<BUFFER_SIZE; i++) {
     result[i] = server_message[i-6];
   }
+
+  struct timespec starttime;
+  clock_gettime(CLOCK_REALTIME, &starttime);
 
   if (sendto(data_socket_desc, result, reading_size+6, 0, (struct sockaddr *)&data_addr, sizeof(data_addr)) < 0) {
     fclose(file);
@@ -24,29 +35,52 @@ int sendPart(int data_socket_desc, char server_message[BUFFER_SIZE], char result
   }
   /*for(int i=0; i < BUFFER_SIZE; i++) {
     printf(" %2x", result[i]);
-  }*/
-  putchar('\n');
+  }
+  putchar('\n');*/
   printf("Sent part %d of %ld bytes\n", part+1, reading_size+6);
+  sentData[part] = starttime;
   return 0;
 }
 
-int checkRcvAck(int seq_nb, int* received_acks) {
-  return received_acks[seq_nb];
-}
-
-int readAck(char client_message[BUFFER_SIZE], int* received_acks) {
+struct ACK readAck(char client_message[BUFFER_SIZE], struct ACK* received_acks) {
   char* seq = (char *)malloc(6*sizeof(char));
   for (int i=3; i<3+sizeof(seq); i++) {
     seq[i-3] = client_message[i];
   }
   int seq_nb = atoi(seq);
   free(seq);
-  printf("ACK %06d RECEIVED\n", seq_nb);
-  if (checkRcvAck(seq_nb, received_acks) == 0) {
-    received_acks[seq_nb] = 1;
-    return -1;
+  struct ACK ack;
+  for (int i=1; i < seq_nb; i++) {
+    received_acks[i].seq_nb = i;
+    received_acks[i].amount = 1;
   }
-  return seq_nb;
+  if (received_acks[seq_nb].amount == NULL) {
+    ack.amount = 0;
+  } else {
+    ack.amount = received_acks[seq_nb].amount;
+  }
+  ack.amount += 1;
+  printf("%d ACK %06d RECEIVED\n", ack.amount, seq_nb);
+  ack.seq_nb = seq_nb;
+  received_acks[seq_nb] = ack;
+  return received_acks[seq_nb];
+}
+
+int FlightSize(int part, struct timespec* sentData, struct ACK* received_acks) {
+  int flightsize = 0;
+  for (int i=1; i<part+1; i++) {
+    if (sentData[i].tv_nsec > 0 && received_acks[i].amount == 0)
+      flightsize++;
+  }
+  return flightsize;
+}
+
+int calculatePartsToSend(int file_size) {
+  int part = 0;
+  while((part * (BUFFER_SIZE-6)) < file_size) {
+    part++;
+  }
+  return part;
 }
 
 int main(int argc, char *argv[]){
@@ -141,7 +175,7 @@ int main(int argc, char *argv[]){
           printf("File name to transfer: %s\n", client_message);
           file = fopen(client_message, "rb");
           if (file == NULL) {
-            printf("Couldn't open the file.\nPlease enter a valid file name: ");
+            printf("Couldn't open the file.\n");
             close(data_socket_desc);
             exit(1);
           }
@@ -149,38 +183,52 @@ int main(int argc, char *argv[]){
           int file_size = ftell(file);
           int part = 0;
           char result[BUFFER_SIZE];
-          sprintf(result, "%06d", part+1);
           //result[6] = ' ';
-          int credit = CREDIT;
+          int cwnd = 1;
           fd_set desc_set;
           FD_ZERO(&desc_set);
           struct timeval nowait;
-          int* received_acks = (int *)malloc(999999*sizeof(int));
-          while((part * (BUFFER_SIZE-6)) < file_size) {
-            while(credit > 0) {
+          struct ACK* received_acks = (struct ACK *)malloc(999999*sizeof(struct ACK));
+          int ssthresh = 999;
+          struct timespec* sentData = (struct timespec*)malloc(999999*sizeof(struct timespec));
+          int estimatedRtt = MAX_RTT;
+          int oldRtt = estimatedRtt;
+          int maxPart = calculatePartsToSend(file_size);
+          while(received_acks[maxPart].amount == 0) {
+            struct timespec endtime;
+            if (received_acks[part+1].amount >= 1) part++;
+            while(FlightSize(part, sentData, received_acks) < cwnd) {
               nowait.tv_usec = 0;
               nowait.tv_sec = 0;
               FD_SET(data_socket_desc, &desc_set);
-              sendPart(data_socket_desc, server_message, result, part, file, data_addr);
-              credit--;
+              sendPart(data_socket_desc, server_message, result, part, sentData, file, data_addr);
+              part++;
               select(data_socket_desc+1, &desc_set, NULL, NULL, &nowait);
               if (FD_ISSET(data_socket_desc, &desc_set)) {
                 if (recvfrom(data_socket_desc, client_message, sizeof(client_message), 0, (struct sockaddr*)&data_addr, &data_struct_length) < 0) {
                   perror("Error when trying to receive ACK msg\n");
                   return -1;
                 }
-                int checkAck = readAck(client_message, received_acks);
-                credit++;
-                if (checkAck != -1) {
-                  part = checkAck-1;
-                  printf("Resending segment %d\n", checkAck+1);
+                clock_gettime(CLOCK_REALTIME, &endtime);
+                struct ACK checkAck = readAck(client_message, received_acks);
+                int time_taken = ((endtime.tv_sec - sentData[checkAck.seq_nb-1].tv_sec)*nsec_per_sec + endtime.tv_nsec - sentData[checkAck.seq_nb-1].tv_nsec)/nsec_in_usec;
+                estimatedRtt = (7.0/8.0)*oldRtt + (1.0/8.0)*time_taken;
+                if (estimatedRtt > MAX_RTT || estimatedRtt < 0) estimatedRtt = MAX_RTT;
+                oldRtt = estimatedRtt;
+                cwnd++;
+                if (checkAck.amount >= 4) {
+                  part = checkAck.seq_nb;
+                  printf("Resending segment %d\n", checkAck.seq_nb+1);
+                  checkAck.amount = 0;
+                  received_acks[checkAck.seq_nb] = checkAck;
+                  cwnd = 1;
+                  ssthresh = FlightSize(part, sentData, received_acks)/2;
                 }
               }
-              part++;
-              sprintf(result, "%06d", part+1);
             }
             rtt.tv_sec = 0;
-            rtt.tv_usec = 300000;
+            rtt.tv_usec = estimatedRtt;
+            printf("RTT=%d\n", estimatedRtt);
             FD_SET(data_socket_desc, &desc_set);
             select(data_socket_desc+1, &desc_set, NULL, NULL, &rtt);
             if (FD_ISSET(data_socket_desc, &desc_set)) {
@@ -188,21 +236,36 @@ int main(int argc, char *argv[]){
                 perror("Error when trying to receive ACK msg\n");
                 return -1;
               }
-              credit++;
-              int checkAck = readAck(client_message, received_acks);
-              if (checkAck != -1) {
-                part = checkAck;
-                sprintf(result, "%06d", part+1);
-                printf("Resending segment %d\n", checkAck+1);
+              cwnd++;
+              clock_gettime(CLOCK_REALTIME, &endtime);
+              struct ACK checkAck = readAck(client_message, received_acks);
+              int time_taken = ((endtime.tv_sec - sentData[checkAck.seq_nb-1].tv_sec)*nsec_per_sec + endtime.tv_nsec - sentData[checkAck.seq_nb-1].tv_nsec)/nsec_in_usec;
+              estimatedRtt = (7.0/8.0)*oldRtt + (1.0/8.0)*time_taken;
+              if (estimatedRtt > MAX_RTT || estimatedRtt < 0) estimatedRtt = MAX_RTT;
+              oldRtt = estimatedRtt;
+              if (checkAck.amount >= 4) {
+                part = checkAck.seq_nb;
+                printf("Resending segment %d\n", checkAck.seq_nb+1);
+                checkAck.amount = 0;
+                received_acks[checkAck.seq_nb] = checkAck;
+                cwnd = 1;
+                ssthresh = FlightSize(part, sentData, received_acks)/2;
+                sendPart(data_socket_desc, server_message, result, part, sentData, file, data_addr);
               }
             } else {
-              printf("RTT Passed, retransmitting segment %d...\n", part);
-              sendPart(data_socket_desc, server_message, result, part, file, data_addr);
+              printf("RTT Passed, retransmitting segment %d...\n", part+1);
+              cwnd = 1;
+              ssthresh = FlightSize(part, sentData, received_acks)/2;
+              sendPart(data_socket_desc, server_message, result, part, sentData, file, data_addr);
             }
+            printf("FlightSize=%d and cwnd=%d\n", FlightSize(part, sentData, received_acks), cwnd);
           }
           strcpy(server_message, "FIN");
-          if (sendto(data_socket_desc, server_message, sizeof(server_message), 0, (struct sockaddr*)&data_addr, data_struct_length) < 0) {
-            //retry
+          ssize_t end_result = sendto(data_socket_desc, server_message, sizeof(server_message), 0, (struct sockaddr*)&data_addr, data_struct_length);
+          while (end_result < 0) {
+            printf("Error while sending END pckt, retrying...\n");
+            end_result = sendto(data_socket_desc, server_message, sizeof(server_message), 0, (struct sockaddr*)&data_addr, data_struct_length);
+            sleep(1);
           }
           free(received_acks);
           close(data_socket_desc);
