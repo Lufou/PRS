@@ -189,7 +189,7 @@ int main(int argc, char *argv[]){
           FD_ZERO(&desc_set);
           struct timeval nowait;
           struct ACK* received_acks = (struct ACK *)malloc(999999*sizeof(struct ACK));
-          int ssthresh = 999;
+          int ssthresh = 100;
           struct timespec* sentData = (struct timespec*)malloc(999999*sizeof(struct timespec));
           int estimatedRtt = MAX_RTT;
           int oldRtt = estimatedRtt;
@@ -204,12 +204,15 @@ int main(int argc, char *argv[]){
               congestionAvoidance = 0;
             }
             struct timespec endtime;
-            if (received_acks[part+1].amount >= 1) part++;
+            
             while(FlightSize(part, sentData, received_acks) < cwnd) {
+              printf("ssthresh=%d\n", ssthresh);
               nowait.tv_usec = 0;
               nowait.tv_sec = 0;
               FD_SET(data_socket_desc, &desc_set);
-              sendPart(data_socket_desc, server_message, result, part, sentData, file, data_addr);
+              if (received_acks[part+1].amount < 1) {
+                sendPart(data_socket_desc, server_message, result, part, sentData, file, data_addr);
+              }
               part++;
               select(data_socket_desc+1, &desc_set, NULL, NULL, &nowait);
               if (FD_ISSET(data_socket_desc, &desc_set)) {
@@ -226,14 +229,14 @@ int main(int argc, char *argv[]){
                 if (congestionAvoidance) {
                   cwnd = cwnd + 1/cwnd;
                 } else {
-                  cwnd++;
+                  cwnd = ssthresh + checkAck.amount;
+                  printf("Setting cwnd=%d\n", cwnd);
                 }
                 if (checkAck.amount >= 4) {
                   part = checkAck.seq_nb;
                   printf("Resending segment %d\n", checkAck.seq_nb+1);
                   checkAck.amount = 0;
                   received_acks[checkAck.seq_nb] = checkAck;
-                  cwnd = 1;
                   ssthresh = FlightSize(part, sentData, received_acks)/2;
                 }
               }
@@ -257,14 +260,14 @@ int main(int argc, char *argv[]){
               if (congestionAvoidance) {
                 cwnd = cwnd + 1/cwnd;
               } else {
-                cwnd++;
+                cwnd = ssthresh + checkAck.amount;
+                printf("Setting cwnd=%d\n", cwnd);
               }
               if (checkAck.amount >= 4) {
                 part = checkAck.seq_nb;
                 printf("Resending segment %d\n", checkAck.seq_nb+1);
                 checkAck.amount = 0;
                 received_acks[checkAck.seq_nb] = checkAck;
-                cwnd = 1;
                 ssthresh = FlightSize(part, sentData, received_acks)/2;
                 sendPart(data_socket_desc, server_message, result, part, sentData, file, data_addr);
               }
