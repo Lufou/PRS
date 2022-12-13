@@ -2,6 +2,7 @@ transfered_*
 .nfs*
 copy_*
 *.log
+videoplayback.mp4
 
 # Prerequisites
 *.d
