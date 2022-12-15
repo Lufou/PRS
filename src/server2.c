@@ -225,6 +225,9 @@ int main(int argc, char *argv[]){
                 if (estimatedRtt > MAX_RTT) estimatedRtt = MAX_RTT;
                 if (estimatedRtt < 0) estimatedRtt = 1;
                 oldRtt = estimatedRtt;
+                if (highest_ack.seq_nb) {
+                  break;
+                }
                 //cwnd++;
                 if (highest_ack.amount >= 4) {
                   part = highest_ack.seq_nb;
