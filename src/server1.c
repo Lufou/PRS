@@ -202,7 +202,7 @@ int main(int argc, char *argv[]){
           int estimatedRtt = MAX_RTT;
           int oldRtt = estimatedRtt;
           int maxPart = calculatePartsToSend(file_size);
-          while(highest_ack.seq_nb != maxPart) {
+          while(highest_ack.seq_nb < maxPart) {
             struct timespec endtime;
             while(FlightSize(sentData, &highest_ack) < cwnd) {
               nowait.tv_usec = 0;
