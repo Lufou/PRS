@@ -31,12 +31,7 @@ int sendPart(int data_socket_desc, char server_message[BUFFER_SIZE], char result
     fclose(file);
     perror("ERROR SENDING DATA\n");
     return -1;
-    //retry
   }
-  /*for(int i=0; i < BUFFER_SIZE; i++) {
-    printf(" %2x", result[i]);
-  }
-  putchar('\n');*/
   printf("Sent part %d of %ld bytes\n", part+1, reading_size+6);
   sentData[part] = starttime;
   return 0;
@@ -86,7 +81,6 @@ int calculatePartsToSend(int file_size) {
 }
 
 int main(int argc, char *argv[]){
-  // https://stackoverflow.com/questions/60832185/how-to-send-any-file-image-exe-through-udp-in-c
     int port = 2000;
     int data_port = 4999;
     if (argc != 2) {
@@ -191,13 +185,11 @@ int main(int argc, char *argv[]){
           int file_size = ftell(file);
           int part = 0;
           char result[BUFFER_SIZE];
-          //result[6] = ' ';
           int cwnd = 30;
           fd_set desc_set;
           FD_ZERO(&desc_set);
           struct timeval nowait;
           struct ACK highest_ack;
-          //int ssthresh = 999;
           struct timespec* sentData = (struct timespec*)malloc(999999*sizeof(struct timespec));
           int estimatedRtt = MAX_RTT;
           int oldRtt = estimatedRtt;
@@ -225,13 +217,13 @@ int main(int argc, char *argv[]){
                 if (estimatedRtt > MAX_RTT) estimatedRtt = MAX_RTT;
                 if (estimatedRtt < 0) estimatedRtt = 1;
                 oldRtt = estimatedRtt;
-                //cwnd++;
+                if (highest_ack.seq_nb >= maxPart) {
+                  break;
+                }
                 if (highest_ack.amount >= 4) {
                   part = highest_ack.seq_nb;
                   printf("Resending segment %d\n", highest_ack.seq_nb+1);
                   highest_ack.amount = 0;
-                  //cwnd = 1;
-                  //ssthresh = FlightSize(sentData, &highest_ack)/2;
                   sendPart(data_socket_desc, server_message, result, part, sentData, file, data_addr);
                 }
               }
@@ -246,7 +238,6 @@ int main(int argc, char *argv[]){
                 perror("Error when trying to receive ACK msg\n");
                 return -1;
               }
-              //cwnd++;
               clock_gettime(CLOCK_REALTIME, &endtime);
               struct ACK ack = readAck(client_message, &highest_ack);
               int time_taken = ((endtime.tv_sec - sentData[ack.seq_nb-1].tv_sec)*nsec_per_sec + endtime.tv_nsec - sentData[ack.seq_nb-1].tv_nsec)/nsec_in_usec;
@@ -258,14 +249,10 @@ int main(int argc, char *argv[]){
                 part = highest_ack.seq_nb;
                 printf("Resending segment %d\n", highest_ack.seq_nb+1);
                 highest_ack.amount = 0;
-                //cwnd = 1;
-                //ssthresh = FlightSize(sentData, &highest_ack)/2;
                 sendPart(data_socket_desc, server_message, result, part, sentData, file, data_addr);
               }
             } else {
               printf("RTT Passed, retransmitting segment %d...\n", highest_ack.seq_nb+1);
-              //cwnd = 1;
-              //ssthresh = FlightSize(sentData, &highest_ack)/2;
               sendPart(data_socket_desc, server_message, result, highest_ack.seq_nb, sentData, file, data_addr);
             }
             printf("FlightSize=%d and cwnd=%d\n", FlightSize(sentData, &highest_ack), cwnd);
